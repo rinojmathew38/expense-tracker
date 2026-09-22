@@ -1,16 +1,16 @@
 package com.example.expensetracker
 
+import android.app.Application
+import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -26,9 +26,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
+import org.json.JSONArray
+import org.json.JSONObject
 import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -45,10 +47,17 @@ data class ExpenseItem(
     val type: ExpenseType = ExpenseType.MONTHLY_FIXED
 )
 
-class ExpenseViewModel : ViewModel() {
+// --- ViewModel with Local Storage Persistence ---
+class ExpenseViewModel(application: Application) : AndroidViewModel(application) {
+    private val prefs = application.getSharedPreferences("expense_tracker_prefs", Context.MODE_PRIVATE)
     private val _monthlyData = mutableStateMapOf<String, MutableList<ExpenseItem>>()
+
     var selectedCalendar by mutableStateOf(Calendar.getInstance())
         private set
+
+    init {
+        loadDataFromStorage()
+    }
 
     private fun getMonthKey(cal: Calendar): String {
         return SimpleDateFormat("yyyy-MM", Locale.US).format(cal.time)
@@ -63,6 +72,7 @@ class ExpenseViewModel : ViewModel() {
     fun getExpensesForCurrentMonth(): List<ExpenseItem> {
         if (!_monthlyData.containsKey(currentMonthKey)) {
             _monthlyData[currentMonthKey] = defaultMonthlyChecklist()
+            saveDataToStorage()
         }
         return _monthlyData[currentMonthKey] ?: emptyList()
     }
@@ -111,15 +121,67 @@ class ExpenseViewModel : ViewModel() {
         if (index != -1) {
             val item = list[index]
             list[index] = item.copy(isPaid = !item.isPaid)
+            saveDataToStorage()
         }
     }
 
     fun addExpense(title: String, amount: Double, type: ExpenseType) {
         val list = _monthlyData.getOrPut(currentMonthKey) { defaultMonthlyChecklist() }
         list.add(0, ExpenseItem(title = title, amount = amount, isPaid = (type == ExpenseType.DAILY), type = type))
+        saveDataToStorage()
+    }
+
+    // --- Save to Phone Storage ---
+    private fun saveDataToStorage() {
+        val rootObject = JSONObject()
+        for ((monthKey, items) in _monthlyData) {
+            val jsonArray = JSONArray()
+            for (item in items) {
+                val itemObj = JSONObject().apply {
+                    put("id", item.id)
+                    put("title", item.title)
+                    put("amount", item.amount)
+                    put("isPaid", item.isPaid)
+                    put("type", item.type.name)
+                }
+                jsonArray.put(itemObj)
+            }
+            rootObject.put(monthKey, jsonArray)
+        }
+        prefs.edit().putString("saved_monthly_data", rootObject.toString()).apply()
+    }
+
+    // --- Load from Phone Storage ---
+    private fun loadDataFromStorage() {
+        val rawJson = prefs.getString("saved_monthly_data", null) ?: return
+        try {
+            val rootObject = JSONObject(rawJson)
+            val keys = rootObject.keys()
+            while (keys.hasNext()) {
+                val monthKey = keys.next()
+                val jsonArray = rootObject.getJSONArray(monthKey)
+                val itemList = mutableStateListOf<ExpenseItem>()
+                for (i in 0 until jsonArray.length()) {
+                    val obj = jsonArray.getJSONObject(i)
+                    itemList.add(
+                        ExpenseItem(
+                            id = obj.getString("id"),
+                            title = obj.getString("title"),
+                            amount = obj.getDouble("amount"),
+                            isPaid = obj.getBoolean("isPaid"),
+                            type = ExpenseType.valueOf(obj.optString("type", ExpenseType.MONTHLY_FIXED.name))
+                        )
+                    )
+                }
+                _monthlyData[monthKey] = itemList
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 }
 
+// --- App UI ---
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -214,7 +276,6 @@ fun ExpenseTrackerScreen(vm: ExpenseViewModel = viewModel()) {
                 .padding(padding)
                 .padding(horizontal = 16.dp, vertical = 8.dp)
         ) {
-            // Month & Year Selector Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
@@ -247,7 +308,6 @@ fun ExpenseTrackerScreen(vm: ExpenseViewModel = viewModel()) {
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Budget Summary Card
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -295,7 +355,6 @@ fun ExpenseTrackerScreen(vm: ExpenseViewModel = viewModel()) {
             Text("Monthly & Daily Checklist", fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Expense Items
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -396,7 +455,6 @@ fun MonthYearPickerDialog(
                     IconButton(onClick = { selectedYear++ }) { Text(">", fontSize = 20.sp) }
                 }
 
-                // Month selection grid
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     for (row in 0 until 4) {
                         Row(
@@ -482,4 +540,3 @@ fun AddExpenseDialog(onDismiss: () -> Unit, onConfirm: (String, Double, ExpenseT
         }
     )
 }
-
